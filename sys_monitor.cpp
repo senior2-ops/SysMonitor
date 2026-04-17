@@ -4,16 +4,13 @@
 #include <vector>
 #include <unistd.h>
 #include <iomanip>
-#include <filesystem>
 
 using namespace std;
 
-// CPU kullanım verileri için yapı
 struct CpuStats {
     long long user, nice, system, idle, iowait, irq, softirq;
 };
 
-// Çekirdekten CPU yükünü okur
 CpuStats getCpuStats() {
     ifstream file("/proc/stat");
     string cpu;
@@ -24,45 +21,58 @@ CpuStats getCpuStats() {
     return stats;
 }
 
-// Senin cihazındaki özel termal bölgeleri tarayan fonksiyon
+// Çekirdek Frekansını Okur (MHz cinsinden)
+long getCpuFreq() {
+    ifstream file("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
+    long freq;
+    if (file >> freq) return freq / 1000; // kHz to MHz
+    return 0;
+}
+
+// Batarya Akımını Okur (mA cinsinden)
+long getBatteryCurrent() {
+    ifstream file("/sys/class/power_supply/battery/current_now");
+    long current;
+    if (file >> current) return current / 1000; // microAmps to milliAmps
+    return 0;
+}
+
+// Batarya Sağlığı/Durumu
+string getBatteryStatus() {
+    ifstream file("/sys/class/power_supply/battery/status");
+    string status;
+    if (file >> status) return status;
+    return "Bilinmiyor";
+}
+
 double getCpuTemperature() {
-    // 0'dan 100'e kadar olan tüm thermal_zone klasörlerini kontrol et
     for (int i = 0; i < 100; i++) {
         string baseDir = "/sys/class/thermal/thermal_zone" + to_string(i);
         string typePath = baseDir + "/type";
-        
         ifstream typeFile(typePath);
         string type;
         if (typeFile >> type) {
-            // Senin listendeki kritik işlemci isimlerini kontrol ediyoruz
-            if (type == "cpu-0-0-usr" || type == "cpu-1-0-usr" || type == "cpu-thermal" || type == "tsens_tz_sensor0") {
+            if (type == "cpu-0-0-usr" || type == "cpu-1-0-usr" || type == "cpu-thermal") {
                 string tempPath = baseDir + "/temp";
                 ifstream tempFile(tempPath);
                 double temp;
-                if (tempFile >> temp) {
-                    // Mili-derece gelirse (örn: 45000) normal dereceye çevir
-                    return (temp > 1000) ? temp / 1000.0 : temp;
-                }
+                if (tempFile >> temp) return (temp > 1000) ? temp / 1000.0 : temp;
             }
         }
     }
     return 0.0;
 }
 
-// RAM bilgilerini /proc/meminfo'dan çeker
 void printMemoryInfo() {
     ifstream file("/proc/meminfo");
     string label;
     long value;
     long totalMem = 0, availableMem = 0;
-
     while (file >> label >> value) {
-        string unit;
-        file >> unit;
+        string unit; file >> unit;
         if (label == "MemTotal:") totalMem = value;
         if (label == "MemAvailable:") availableMem = value;
     }
-
     double usedMem = (totalMem - availableMem) / 1024.0;
     cout << "--- BELLEK (RAM) DURUMU ---" << endl;
     cout << "Toplam:    " << totalMem / 1024 << " MB" << endl;
@@ -71,14 +81,9 @@ void printMemoryInfo() {
 }
 
 int main() {
-    // Terminal ekranını temizle
-    cout << "\033[2J\033[1;1H";
-    cout << "SysMonitor v1.2 - Android Mühendislik Aracı Başlatılıyor..." << endl;
-    sleep(1);
-
     while (true) {
         CpuStats s1 = getCpuStats();
-        sleep(1); // Hassas ölçüm için 1 saniye bekle
+        usleep(500000);
         CpuStats s2 = getCpuStats();
 
         long long idle1 = s1.idle + s1.iowait;
@@ -86,22 +91,24 @@ int main() {
         long long total1 = idle1 + s1.user + s1.nice + s1.system + s1.irq + s1.softirq;
         long long total2 = idle2 + s2.user + s2.nice + s2.system + s2.irq + s2.softirq;
 
-        double cpuPercentage = (double)((total2 - total1) - (idle2 - idle1)) / (total2 - total1) * 100.0;
-        double currentTemp = getCpuTemperature();
+        double diffTotal = (double)(total2 - total1);
+        double diffIdle = (double)(idle2 - idle1);
+        double cpuPercentage = (diffTotal > 0) ? (diffTotal - diffIdle) / diffTotal * 100.0 : 0.0;
 
-        // Ekranı her saniye güncelle
         cout << "\033[2J\033[1;1H"; 
         cout << "========================================" << endl;
-        cout << "   ANDROID SISTEM KAYNAK ANALIZI        " << endl;
+        cout << "   ANDROID SISTEM VE ENERJI ANALIZI     " << endl;
+        cout << "               (MIRMEL)                 " << endl;
         cout << "========================================" << endl;
         
         cout << "CPU KULLANIMI: %" << fixed << setprecision(2) << cpuPercentage << endl;
+        cout << "CPU FREKANSI:  " << getCpuFreq() << " MHz" << endl;
+        cout << "CPU SICAKLIĞI: " << fixed << setprecision(1) << getCpuTemperature() << "°C" << endl;
         
-        if (currentTemp > 0)
-            cout << "CPU SICAKLIĞI: " << fixed << setprecision(1) << currentTemp << "°C" << endl;
-        else
-            cout << "CPU SICAKLIĞI: Aranıyor..." << endl;
-
+        cout << "----------------------------------------" << endl;
+        cout << "BATARYA DURUMU: " << getBatteryStatus() << endl;
+        cout << "ANLIK AKIM:     " << getBatteryCurrent() << " mA" << endl;
+        
         cout << "----------------------------------------" << endl;
         printMemoryInfo();
         cout << "========================================" << endl;
@@ -109,4 +116,3 @@ int main() {
     }
     return 0;
 }
-

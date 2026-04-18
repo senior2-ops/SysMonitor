@@ -11,10 +11,8 @@
 #include <sys/ioctl.h>
 #include <chrono>
 #include <thread>
-#include <dirent.h>
 
 using namespace std;
-using namespace chrono;
 
 // --- RENK VE GÖRSEL TANIMLAMALAR ---
 #define RESET       "\033[0m"
@@ -26,18 +24,12 @@ using namespace chrono;
 #define CYAN        "\033[36m"
 #define BOLD        "\033[1m"
 #define DIM         "\033[2m"
-#define BOLD_RED    "\033[1;31m"
-#define BOLD_GREEN  "\033[1;32m"
-#define BOLD_YELLOW "\033[1;33m"
-#define BOLD_BLUE   "\033[1;34m"
-#define BOLD_CYAN   "\033[1;36m"
 #define BOLD_WHITE  "\033[1;37m"
 #define BG_BLUE     "\033[44m"
 
 volatile sig_atomic_t g_running = 1;
 void signalHandler(int signum) { g_running = 0; }
 
-// --- MÜHENDİSLİK ARAÇLARI ---
 class TerminalUtils {
 public:
     static void clearScreen() { cout << "\033[2J\033[1;1H"; }
@@ -66,7 +58,6 @@ public:
     }
 };
 
-// --- İZLEME MODÜLLERİ ---
 class CPUMonitor {
 private:
     long long prevIdle = 0, prevTotal = 0;
@@ -75,13 +66,13 @@ public:
         ifstream file("/proc/stat");
         string label;
         long long u, n, s, i, io, ir, si;
-        file >> label >> u >> n >> s >> i >> io >> ir >> si;
+        if (!(file >> label >> u >> n >> s >> i >> io >> ir >> si)) return 0.0;
         long long idle = i + io;
         long long total = u + n + s + i + io + ir + si;
         double diffTotal = total - prevTotal;
         double diffIdle = idle - prevIdle;
         prevIdle = idle; prevTotal = total;
-        return (diffTotal > 0) ? (1.0 - (diffIdle / diffTotal)) * 100.0 : 0.0;
+        return (diffTotal > 0) ? (1.0 - (double)diffIdle / diffTotal) * 100.0 : 0.0;
     }
     double getTemp() {
         const string targets[] = {"cpu-thermal", "battery", "cpu-0-0-usr"};
@@ -99,69 +90,75 @@ public:
     }
 };
 
-class MemoryMonitor {
-public:
-    void getStats(long& total, long& used, double& perc) {
-        ifstream file("/proc/meminfo");
-        long avail = 0; string key;
-        while (file >> key) {
-            if (key == "MemTotal:") file >> total;
-            else if (key == "MemAvailable:") file >> avail;
-            else { string d; file >> d; }
-        }
-        total /= 1024; avail /= 1024;
-        used = total - avail;
-        perc = (total > 0) ? (double)used / total * 100.0 : 0.0;
-    }
-};
-
 class BatteryMonitor {
 public:
-    void getStats(long& curr, int& cap, bool& charging) {
-        ifstream f1("/sys/class/power_supply/battery/current_now"); f1 >> curr; curr /= 1000;
-        ifstream f2("/sys/class/power_supply/battery/capacity"); f2 >> cap;
-        ifstream f3("/sys/class/power_supply/battery/status"); string s; f3 >> s;
-        charging = (s == "Charging" || s == "Full");
+    struct BatData {
+        long current;
+        int capacity;
+        double voltage;
+        double power;
+        int cycles;
+        string health;
+        bool charging;
+    };
+
+    BatData getStats() {
+        BatData d = {0, 0, 0.0, 0.0, 0, "Unknown", false};
+        ifstream f1("/sys/class/power_supply/battery/current_now"); long c; f1 >> c; d.current = c / 1000;
+        ifstream f2("/sys/class/power_supply/battery/capacity"); f2 >> d.capacity;
+        ifstream f3("/sys/class/power_supply/battery/voltage_now"); long v; f3 >> v; d.voltage = v / 1000000.0;
+        ifstream f4("/sys/class/power_supply/battery/status"); string s; f4 >> s; d.charging = (s == "Charging" || s == "Full");
+        ifstream f5("/sys/class/power_supply/battery/health"); f5 >> d.health;
+        ifstream f6("/sys/class/power_supply/battery/cycle_count"); f6 >> d.cycles;
+        
+        d.power = abs(d.voltage * (d.current / 1000.0)); // P = V * I
+        return d;
     }
 };
 
-// --- ANA PANEL ---
 class Dashboard {
 private:
     CPUMonitor cpu;
-    MemoryMonitor mem;
     BatteryMonitor bat;
 public:
     void render() {
         double cpuPerc = cpu.getUsage();
         double temp = cpu.getTemp();
-        long mTotal, mUsed; double mPerc; mem.getStats(mTotal, mUsed, mPerc);
-        long bCurr; int bCap; bool bChar; bat.getStats(bCurr, bCap, bChar);
+        auto b = bat.getStats();
         auto [cols, rows] = TerminalUtils::getTerminalSize();
 
         TerminalUtils::clearScreen();
+        // Başlık çubuğu
         cout << BG_BLUE << BOLD_WHITE << string(cols, ' ') << RESET << endl;
-        cout << BG_BLUE << BOLD_WHITE << "  SYS-MONITOR MIRMEL  " << string(cols - 39, ' ') << RESET << endl;
+        cout << BG_BLUE << BOLD_WHITE << "  SYS-MONITOR PRO v3.5 | ENERJİ ANALİZİ " << string(cols > 40 ? cols - 40 : 0, ' ') << RESET << endl;
         cout << string(cols, '-') << endl;
 
-        cout << BOLD_CYAN << " [SİSTEM KAYNAKLARI]" << RESET << endl;
-        cout << " CPU: " << ProgressBar::generate(cpuPerc) << " %" << fixed << setprecision(1) << cpuPerc << endl;
-        cout << " RAM: " << ProgressBar::generate(mPerc) << " " << mUsed << "/" << mTotal << " MB" << endl;
-        cout << " Isı: " << (temp > 45 ? RED : GREEN) << temp << " °C" << RESET << endl;
+        // CPU & Termal Bölümü
+        cout << BOLD_CYAN << " [SİSTEM PERFORMANSI]" << RESET << endl;
+        cout << " CPU Yükü: " << ProgressBar::generate(cpuPerc) << " %" << fixed << setprecision(1) << cpuPerc << endl;
+        cout << " Sıcaklık: " << (temp > 45 ? RED : GREEN) << temp << " °C" << RESET << endl;
 
-        cout << endl << BOLD_YELLOW << " [ENERJİ ANALİZİ]" << RESET << endl;
-        cout << " Pil: " << ProgressBar::generate(bCap) << " %" << bCap << endl;
-        cout << " Akım: " << (bCurr >= 0 ? GREEN : RED) << bCurr << " mA" << RESET << endl;
+        // Enerji Analizi Bölümü
+        cout << endl << BOLD_YELLOW << " [GÜÇ VE BATARYA ANALİZİ]" << RESET << endl;
+        cout << " Kapasite: " << ProgressBar::generate(b.capacity) << " %" << b.capacity << endl;
+        cout << " Akım/Güç: " << (b.current >= 0 ? GREEN : RED) << b.current << " mA" << RESET 
+             << " | " << BOLD << fixed << setprecision(2) << b.power << " Watt" << RESET << endl;
+        cout << " Voltaj:    " << CYAN << b.voltage << " V" << RESET << endl;
         
-        if (bChar) {
+        // Pil Sağlığı ve Ömrü
+        cout << endl << BOLD_MAGENTA << " [PİL SAĞLIK VE ÖMÜR]" << RESET << endl;
+        cout << " Sağlık:   " << (b.health == "Good" ? GREEN : YELLOW) << b.health << RESET << endl;
+        cout << " Döngü:    " << WHITE << b.cycles << " Tam Döngü" << RESET << endl;
+
+        if (b.charging) {
             double eff = 100.0 - (cpuPerc * 0.4) - (temp > 38 ? (temp - 38) * 2 : 0);
-            cout << " Durum: " << GREEN << "ŞARJ OLUYOR" << RESET << " | Verim: %" << (int)(eff > 0 ? eff : 0) << endl;
+            cout << " Durum:    " << GREEN << "ŞARJ OLUYOR (Verim: %" << (int)(eff > 0 ? eff : 0) << ")" << RESET << endl;
         } else {
-            cout << " Durum: " << RED << "DEŞARJ (PİL HARCANIYOR)" << RESET << endl;
+            cout << " Durum:    " << RED << "PİL HARCANIYOR (Deşarj)" << RESET << endl;
         }
 
         cout << endl << string(cols, '-') << endl;
-        cout << DIM << " Çıkış: CTRL+C | Yenileme: 0.8s" << RESET << endl;
+        cout << DIM << " Çıkış: CTRL+C | Mühendislik Modu Aktif" << RESET << endl;
     }
 };
 
@@ -171,7 +168,7 @@ int main() {
     Dashboard ds;
     while (g_running) {
         ds.render();
-        usleep(800000);
+        usleep(850000); // 0.85 saniye yenileme
     }
     TerminalUtils::showCursor();
     TerminalUtils::clearScreen();

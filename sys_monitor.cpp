@@ -4,136 +4,147 @@
 #include <vector>
 #include <unistd.h>
 #include <iomanip>
+#include <algorithm>
+#include <ctime>
 
 using namespace std;
 
-#define RESET   "\033[0m"
-#define RED     "\033[31m"
-#define GREEN   "\033[32m"
-#define YELLOW  "\033[33m"
-#define BLUE    "\033[34m"
-#define CYAN    "\033[36m"
-#define BOLDRED "\033[1;31m"
+// --- PROFESYONEL RENK VE STİL PALETİ ---
+const string CLEAR   = "\033[2J\033[1;1H";
+const string RESET   = "\033[0m";
+const string BOLD    = "\033[1m";
+const string GREEN   = "\033[32m";
+const string YELLOW  = "\033[33m";
+const string RED     = "\033[31m";
+const string CYAN    = "\033[36m";
+const string MAGENTA = "\033[35m";
+const string BG_RED  = "\033[41m\033[37m";
 
 struct CpuStats {
     long long user, nice, system, idle, iowait, irq, softirq;
 };
 
-// --- SİSTEM FONKSİYONLARI ---
-CpuStats getCpuStats() {
-    ifstream file("/proc/stat");
-    string cpu;
-    CpuStats stats = {0};
-    if (file >> cpu) {
-        file >> stats.user >> stats.nice >> stats.system >> stats.idle >> stats.iowait >> stats.irq >> stats.softirq;
-    }
-    return stats;
-}
+// --- MÜHENDİSLİK FONKSİYONLARI ---
 
-string getProgressBar(double percentage, int width = 15) {
+// Gelişmiş Grafik Çubuğu
+string drawBar(double perc, int width = 15) {
     string bar = "[";
-    int pos = width * (percentage / 100.0);
+    int pos = width * (perc / 100.0);
+    string color = (perc < 50) ? GREEN : (perc < 80 ? YELLOW : RED);
+    
     for (int i = 0; i < width; ++i) {
-        if (i < pos) bar += "#";
-        else bar += "-";
+        if (i < pos) bar += color + "■" + RESET;
+        else bar += " ";
     }
     bar += "]";
     return bar;
 }
 
-double getCpuTemperature() {
-    for (int i = 0; i < 80; i++) {
-        string baseDir = "/sys/class/thermal/thermal_zone" + to_string(i);
-        ifstream typeFile(baseDir + "/type");
-        string type;
-        if (typeFile >> type && (type == "cpu-0-0-usr" || type == "cpu-1-0-usr" || type == "cpu-thermal")) {
-            ifstream tempFile(baseDir + "/temp");
-            double t;
-            if (tempFile >> t) return (t > 1000) ? t / 1000.0 : t;
+// Çekirdek İstatistiklerini Okur
+CpuStats fetchCpu() {
+    ifstream file("/proc/stat");
+    string cpu_label;
+    CpuStats s = {0};
+    if (file >> cpu_label) {
+        file >> s.user >> s.nice >> s.system >> s.idle >> s.iowait >> s.irq >> s.softirq;
+    }
+    return s;
+}
+
+// Akıllı Sensör Tarayıcı (Listendeki tüm sensörleri destekler)
+double getTemp() {
+    const string targets[] = {"cpu-0-0-usr", "cpu-1-0-usr", "cpu-thermal", "tsens_tz_sensor0", "battery"};
+    for (const string& type_name : targets) {
+        for (int i = 0; i < 100; i++) {
+            string path = "/sys/class/thermal/thermal_zone" + to_string(i);
+            ifstream t_file(path + "/type");
+            string t_str;
+            if (t_file >> t_str && t_str == type_name) {
+                ifstream temp_val(path + "/temp");
+                double val;
+                if (temp_val >> val) return (val > 1000) ? val / 1000.0 : val;
+            }
         }
     }
     return 0.0;
 }
 
-long getBatteryCurrent() {
-    ifstream file("/sys/class/power_supply/battery/current_now");
-    long current;
-    if (file >> current) return current / 1000;
+// Enerji Akımı (mA)
+long getAmper() {
+    ifstream bFile("/sys/class/power_supply/battery/current_now");
+    long curr = 0;
+    if (bFile >> curr) return curr / 1000;
     return 0;
+}
+
+/
+void showHeader() {
+    cout << CYAN << "┌──────────────────────────────────────┐" << endl;
+    cout << "│      " << BOLD << "SYS-MONITOR" << RESET << CYAN << "        │" << endl;
+    cout << "│           " << MAGENTA << "MIRMEL" << RESET << CYAN << "                │" << endl;
+    cout << "└──────────────────────────────────────┘" << RESET << endl;
 }
 
 int main() {
     while (true) {
-        // CPU Ölçümü
-        CpuStats s1 = getCpuStats();
-        usleep(700000); // 0.7 saniye örnekleme hızı
-        CpuStats s2 = getCpuStats();
+        // CPU Delta Hesaplama
+        CpuStats s1 = fetchCpu();
+        usleep(700000); // 0.8s Örnekleme
+        CpuStats s2 = fetchCpu();
 
         long long idle1 = s1.idle + s1.iowait;
         long long idle2 = s2.idle + s2.iowait;
         long long total1 = idle1 + s1.user + s1.nice + s1.system + s1.irq + s1.softirq;
         long long total2 = idle2 + s2.user + s2.nice + s2.system + s2.irq + s2.softirq;
+        
+        double cpuPerc = (total2 > total1) ? (double)((total2 - total1) - (idle2 - idle1)) / (total2 - total1) * 100.0 : 0.0;
 
-        double diffTotal = (double)(total2 - total1);
-        double diffIdle = (double)(idle2 - idle1);
-        double cpuPerc = (diffTotal > 0) ? (diffTotal - diffIdle) / diffTotal * 100.0 : 0.0;
-
-        // Diğer Veriler
-        long current = getBatteryCurrent();
-        double temp = getCpuTemperature();
-
-        // RAM Detayları
+        // RAM Analizi
         ifstream memFile("/proc/meminfo");
-        string label; long totalM = 0, availM = 0;
-        while (memFile >> label) {
-            if (label == "MemTotal:") memFile >> totalM;
-            else if (label == "MemAvailable:") memFile >> availM;
+        long totalK = 0, availK = 0;
+        string key;
+        while (memFile >> key) {
+            if (key == "MemTotal:") memFile >> totalK;
+            else if (key == "MemAvailable:") memFile >> availK;
             else { string dummy; memFile >> dummy; }
         }
-        double ramUsed = (totalM - availM) / 1024.0;
-        double ramTotal = totalM / 1024.0;
-        double ramPerc = (ramTotal > 0) ? (ramUsed / ramTotal) * 100.0 : 0.0;
+        double totalM = totalK / 1024.0;
+        double usedM = (totalK - availK) / 1024.0;
+        double ramPerc = (totalM > 0) ? (usedM / totalM) * 100.0 : 0.0;
 
-        // --- EKRAN ÇIKTISI ---
-        cout << "\033[2J\033[1;1H"; 
+        double temp = getTemp();
+        long curr = getAmper();
+
         
-        // KRİTİK ISI ALARMI (Öneri 2)
-        if (temp > 42.0) {
-            cout << BOLDRED << "!!! KRITIK SICAKLIK UYARISI !!!" << RESET << endl;
+        cout << CLEAR;
+        
+        
+        if (temp > 48.0) {
+            cout << BG_RED << BOLD << " !!! YUKSEK ISI: SARJ HIZI DUSEBILIR !!! " << RESET << endl << endl;
         }
+        
+        showHeader();
+        
+        cout << BOLD << " [KAYNAK KULLANIMI] " << RESET << endl;
+        cout << " CPU  " << drawBar(cpuPerc) << " %" << fixed << setprecision(1) << cpuPerc << endl;
+        cout << " RAM  " << drawBar(ramPerc) << " %" << setprecision(1) << ramPerc << endl;
+        cout << " Detay: " << (int)usedM << " MB / " << (int)totalM << " MB" << endl;
+        
+        cout << endl << BOLD << " [ENERJI & TERMAL] " << RESET << endl;
+        cout << " Sicaklik: " << (temp > 40 ? RED : GREEN) << temp << " °C" << RESET << endl;
+        cout << " Akim:     " << (curr > 0 ? GREEN : RED) << curr << " mA" << RESET << endl;
+        
 
-        cout << CYAN << "========================================" << RESET << endl;
-        cout << YELLOW << "    SYS-MONITOR v2.5 | LAB EDITION" << RESET << endl;
-        cout << YELLOW << "                MIRMEL" << RESET << endl;
-        cout << CYAN << "========================================" << RESET << endl;
-        
-        // İşlemci Bölümü
-        cout << "CPU YUKU:    " << getProgressBar(cpuPerc) << " %" << fixed << setprecision(1) << cpuPerc << endl;
-        cout << "CPU ISI:     " << (temp > 42 ? BOLDRED : GREEN) << temp << "°C" << RESET << endl;
-        
-        cout << "----------------------------------------" << endl;
-        
-        // Enerji ve Verimlilik (Öneri 3)
-        cout << "ENERJI AKIMI: " << (current >= 0 ? GREEN : RED) << current << " mA" << RESET << endl;
-        
-        if (current > 0) {
-            double efficiency = 100.0 - (cpuPerc * 0.5); // Basit mühendislik katsayısı
-            cout << GREEN << ">> DURUM: SARJ OLUYOR" << RESET << endl;
-            cout << "VERIMLILIK SKORU: %" << setprecision(0) << (efficiency > 0 ? efficiency : 0) << endl;
+        if (curr > 0) {
+            double efficiency = 100.0 - (cpuPerc * 0.4) - (temp > 35 ? (temp - 35) * 3 : 0);
+            if (efficiency < 0) efficiency = 0;
+            cout << " Verim:    " << YELLOW << "%" << (int)efficiency << RESET << " (Optimize Ediliyor)" << endl;
         } else {
-            cout << RED << ">> DURUM: BATARYA KULLANIMDA" << RESET << endl;
+            cout << " Durum:    " << RED << "Pil Harcaniyor" << RESET << endl;
         }
 
-        cout << "----------------------------------------" << endl;
-        
-        // Bellek Bölümü (Eksiksiz Detay)
-        cout << "RAM KULLANIMI: " << getProgressBar(ramPerc) << " %" << setprecision(1) << ramPerc << endl;
-        cout << "TOPLAM RAM:    " << (int)ramTotal << " MB" << endl;
-        cout << "KULLANILAN:    " << (int)ramUsed << " MB" << endl;
-        cout << "BOSTA RAM:     " << (int)(availM / 1024.0) << " MB" << endl;
-
-        cout << CYAN << "========================================" << RESET << endl;
-        cout << "Kapatmak için: CTRL + C" << endl;
+        cout << endl << CYAN << "────────────────────────────────────────" << endl;
+        cout << RESET << " Durdurmak icin " << BOLD << "CTRL + C" << RESET << endl;
     }
     return 0;
 }

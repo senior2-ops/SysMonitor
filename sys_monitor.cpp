@@ -11,12 +11,7 @@
 #include <sys/ioctl.h>
 #include <chrono>
 #include <thread>
-#include <map>
-#include <functional>
-#include <array>
-#include <fstream>
 #include <dirent.h>
-#include <sys/sysinfo.h>
 
 using namespace std;
 using namespace chrono;
@@ -37,8 +32,8 @@ using namespace chrono;
 #define BOLD_BLUE   "\033[1;34m"
 #define BOLD_CYAN   "\033[1;36m"
 #define BOLD_WHITE  "\033[1;37m"
+#define BOLD_MAGENTA "\033[1;35m"
 #define BG_BLUE     "\033[44m"
-#define BG_CYAN     "\033[46m"
 
 volatile sig_atomic_t g_running = 1;
 
@@ -84,7 +79,6 @@ struct ProcessInfo {
     string name;
     double cpuPercent;
     long long memory;
-    string user;
 };
 
 class TerminalUtils {
@@ -101,20 +95,10 @@ public:
         cout << "\033[?25h";
     }
     
-    static void setCursorPosition(int x, int y) {
-        cout << "\033[" << y << ";" << x << "H";
-    }
-    
     static pair<int, int> getTerminalSize() {
         struct winsize w;
         ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
         return {w.ws_col, w.ws_row};
-    }
-    
-    static string colorize(double value, double warn, double crit, const string& unit = "%") {
-        if (value >= crit) return BOLD_RED + to_string((int)value) + unit + RESET;
-        if (value >= warn) return BOLD_YELLOW + to_string((int)value) + unit + RESET;
-        return GREEN + to_string((int)value) + unit + RESET;
     }
     
     static string colorizeTemp(double temp) {
@@ -127,7 +111,7 @@ public:
 
 class ProgressBar {
 public:
-    static string generate(double percentage, int width = 20, bool showPercent = true) {
+    static string generate(double percentage, int width = 20) {
         string bar = "[";
         int pos = (int)(width * (percentage / 100.0));
         
@@ -143,11 +127,9 @@ public:
         }
         bar += RESET "]";
         
-        if (showPercent) {
-            stringstream ss;
-            ss << " " << fixed << setprecision(1) << setw(5) << percentage << "%";
-            bar += ss.str();
-        }
+        stringstream ss;
+        ss << " " << fixed << setprecision(1) << setw(5) << percentage << "%";
+        bar += ss.str();
         
         return bar;
     }
@@ -159,14 +141,17 @@ public:
         for (int i = 0; i < width; ++i) {
             if (i < pos) {
                 int colorCode = 40 + (int)(i * 1.5);
-                bar += "\033[38;5;" + to_string(colorCode) + "m█" RESET;
+                bar += "\033[38;5;" + to_string(colorCode) + "m#";
             } else {
-                bar += DIM "░" RESET;
+                bar += DIM "-";
             }
         }
+        bar += RESET "]";
         
         stringstream ss;
-        bar += RESET "] " + to_string((int)percentage) + "%";
+        ss << " " << (int)percentage << "%";
+        bar += ss.str();
+        
         return bar;
     }
 };
@@ -174,8 +159,6 @@ public:
 class CPUMonitor {
 private:
     vector<CPUStats> prevStats;
-    vector<long long> prevFreqs;
-    vector<double> prevTemps;
     int coreCount;
     
     long long getCoreFrequency(int core) {
@@ -194,7 +177,7 @@ private:
         return "unknown";
     }
     
-    double getCoreTemperature(int core) {
+    double getCoreTemperature() {
         vector<string> tempPaths = {
             "/sys/class/thermal/thermal_zone0/temp",
             "/sys/class/thermal/thermal_zone1/temp",
@@ -215,8 +198,6 @@ public:
     CPUMonitor() {
         coreCount = sysconf(_SC_NPROCESSORS_ONLN);
         prevStats.resize(coreCount + 1);
-        prevFreqs.resize(coreCount);
-        prevTemps.resize(coreCount);
         update();
     }
     
@@ -239,7 +220,6 @@ public:
             css >> coreName >> prevStats[i+1].user >> prevStats[i+1].nice >> prevStats[i+1].system 
                 >> prevStats[i+1].idle >> prevStats[i+1].iowait >> prevStats[i+1].irq 
                 >> prevStats[i+1].softirq;
-            prevFreqs[i] = getCoreFrequency(i);
         }
     }
     
@@ -303,7 +283,7 @@ public:
             core.usage = (totalDiff > 0) ? (totalDiff - idleDiff) / totalDiff * 100.0 : 0.0;
             core.frequency = getCoreFrequency(i);
             core.governor = getCoreGovernor(i);
-            core.temperature = getCoreTemperature(i);
+            core.temperature = getCoreTemperature();
             
             cores.push_back(core);
             prevStats[i+1] = curr;
@@ -313,7 +293,7 @@ public:
     }
     
     int getCoreCount() const { return coreCount; }
-    double getTemperature() { return getCoreTemperature(0); }
+    double getTemperature() { return getCoreTemperature(); }
 };
 
 class MemoryMonitor {
@@ -327,7 +307,6 @@ public:
         while (memFile >> label) {
             if (label == "MemTotal:") memFile >> info.total;
             else if (label == "MemAvailable:") memFile >> info.available;
-            else if (label == "MemFree:") memFile >> info.used;
             else if (label == "Buffers:") memFile >> info.buffers;
             else if (label == "Cached:") memFile >> info.cached;
             else if (label == "SwapTotal:") memFile >> info.swapTotal;
@@ -357,7 +336,7 @@ public:
         if (currentFile >> info.current) info.current /= 1000;
         
         ifstream capacityFile("/sys/class/power_supply/battery/capacity");
-        if (capacityFile >> info.capacity);
+        capacityFile >> info.capacity;
         
         ifstream voltageFile("/sys/class/power_supply/battery/voltage_now");
         if (voltageFile >> info.voltage) info.voltage /= 1000;
@@ -368,7 +347,7 @@ public:
         }
         
         ifstream healthFile("/sys/class/power_supply/battery/health");
-        if (healthFile >> info.health);
+        healthFile >> info.health;
         
         ifstream tempFile("/sys/class/power_supply/battery/temp");
         if (tempFile >> info.temperature) info.temperature /= 10.0;
@@ -452,7 +431,7 @@ public:
 
 class ProcessMonitor {
 public:
-    vector<ProcessInfo> getTopProcesses(int count = 10) {
+    vector<ProcessInfo> getTopProcesses(int count = 8) {
         vector<ProcessInfo> processes;
         
         DIR* dir = opendir("/proc");
@@ -474,20 +453,13 @@ public:
                 info.name = info.name.substr(0, 15);
             }
             
-            string statPath = "/proc/" + pidStr + "/stat";
-            ifstream statFile(statPath);
-            if (statFile) {
-                string dummy;
-                long long utime, stime;
-                statFile >> dummy >> dummy >> dummy >> dummy >> dummy >> dummy >> dummy >> dummy >> dummy >> dummy >> dummy >> dummy >> dummy >> utime >> stime;
-                info.cpuPercent = 0;
-            }
-            
             string statmPath = "/proc/" + pidStr + "/statm";
             ifstream statmFile(statmPath);
             if (statmFile >> info.memory) {
                 info.memory = info.memory * 4 / 1024;
             }
+            
+            info.cpuPercent = 0;
             
             processes.push_back(info);
         }
@@ -575,8 +547,8 @@ private:
         cout << string(cols, ' ') << RESET << "\n";
         
         cout << BG_BLUE << BOLD_WHITE;
-        cout << "  ⚡ MIRMEL SYSTEM CONTROL";
-        cout << string(cols - 45 - hostname.length(), ' ') << "🏷️ " << hostname;
+        cout << "  TERMUX SYSTEM MONITOR PRO v3.0";
+        cout << string(cols - 45 - (int)hostname.length(), ' ') << "HOST: " << hostname;
         cout << RESET << "\n";
         
         cout << DIM;
@@ -584,7 +556,7 @@ private:
         cout << "  Uptime: " << uptime << "  |  Load: " << systemInfo.getLoadAverage();
         cout << RESET << "\n";
         
-        cout << string(cols, '─') << "\n";
+        cout << string(cols, '-') << "\n";
     }
     
     void drawCPUSection() {
@@ -592,14 +564,14 @@ private:
         double temperature = cpuMonitor.getTemperature();
         auto cores = cpuMonitor.getAllCores();
         
-        cout << BOLD_CYAN << "  🖥️  CPU İŞLEMCİ DURUMU" << RESET << "\n";
-        cout << "  Toplam Kullanım: " << ProgressBar::generateGradient(totalUsage, 30) << "\n";
+        cout << BOLD_CYAN << "  CPU ISLEMCI DURUMU" << RESET << "\n";
+        cout << "  Toplam Kullanim: " << ProgressBar::generateGradient(totalUsage, 30) << "\n";
         
-        cout << "  Sıcaklık: " << TerminalUtils::colorizeTemp(temperature) 
-             << fixed << setprecision(1) << temperature << "°C" << RESET << "\n\n";
+        cout << "  Sicaklik: " << TerminalUtils::colorizeTemp(temperature) 
+             << fixed << setprecision(1) << temperature << "C" << RESET << "\n\n";
         
         if (cores.size() <= 8) {
-            cout << "  Çekirdek Detayları:\n";
+            cout << "  Cekirdek Detaylari:\n";
             for (size_t i = 0; i < min((size_t)8, cores.size()); i++) {
                 cout << "    CPU" << setw(2) << cores[i].id << ": ";
                 cout << ProgressBar::generate(cores[i].usage, 15) << " ";
@@ -614,7 +586,7 @@ private:
     void drawMemorySection() {
         auto mem = memoryMonitor.getInfo();
         
-        cout << BOLD_MAGENTA << "  🧠 BELLEK KULLANIMI" << RESET << "\n";
+        cout << BOLD_MAGENTA << "  BELLEK KULLANIMI" << RESET << "\n";
         cout << "  RAM:  " << ProgressBar::generateGradient(mem.usagePercent, 30) << "\n";
         cout << "  " << setw(10) << mem.used << " MB / " << setw(10) << mem.total << " MB\n";
         
@@ -630,20 +602,20 @@ private:
     void drawBatterySection() {
         auto bat = batteryMonitor.getInfo();
         
-        cout << BOLD_YELLOW << "  🔋 BATARYA DURUMU" << RESET << "\n";
+        cout << BOLD_YELLOW << "  BATARYA DURUMU" << RESET << "\n";
         
-        string statusIcon = bat.isCharging ? "⚡" : "🔋";
-        string statusText = bat.isCharging ? "ŞARJ OLUYOR" : "DEŞARJ OLUYOR";
+        string statusIcon = bat.isCharging ? "+" : "-";
+        string statusText = bat.isCharging ? "SARJ OLUYOR" : "DESARJ OLUYOR";
         string statusColor = bat.isCharging ? GREEN : YELLOW;
         
         cout << "  " << statusIcon << " " << statusColor << statusText << RESET << "\n";
         cout << "  Kapasite:  " << ProgressBar::generate((double)bat.capacity, 30) << "\n";
-        cout << "  Akım:      " << (bat.current >= 0 ? GREEN : RED) << setw(6) << bat.current << " mA" << RESET;
+        cout << "  Akim:      " << (bat.current >= 0 ? GREEN : RED) << setw(6) << bat.current << " mA" << RESET;
         cout << "  |  Voltaj: " << bat.voltage << " mV\n";
         
         if (bat.temperature > 0) {
-            cout << "  Batarya Sıcaklığı: " << TerminalUtils::colorizeTemp(bat.temperature) 
-                 << fixed << setprecision(1) << bat.temperature << "°C" << RESET << "\n";
+            cout << "  Batarya Sicakligi: " << TerminalUtils::colorizeTemp(bat.temperature) 
+                 << fixed << setprecision(1) << bat.temperature << "C" << RESET << "\n";
         }
         
         cout << "\n";
@@ -652,17 +624,17 @@ private:
     void drawNetworkSection() {
         auto net = networkMonitor.getInfo();
         
-        cout << BOLD_GREEN << "  🌐 AĞ TRAFİĞİ" << RESET << "\n";
-        cout << "  ↓ İndirme: " << GREEN << networkMonitor.formatSpeed(net.rxSpeed) << RESET;
-        cout << "  |  ↑ Yükleme: " << RED << networkMonitor.formatSpeed(net.txSpeed) << RESET << "\n";
+        cout << BOLD_GREEN << "  AG TRAFIGI" << RESET << "\n";
+        cout << "  v Indirme: " << GREEN << networkMonitor.formatSpeed(net.rxSpeed) << RESET;
+        cout << "  |  ^ Yukleme: " << RED << networkMonitor.formatSpeed(net.txSpeed) << RESET << "\n";
         cout << "\n";
     }
     
     void drawProcessSection() {
         auto processes = processMonitor.getTopProcesses(8);
         
-        cout << BOLD_BLUE << "  📊 EN ÇOK BELLEK KULLANAN İŞLEMLER" << RESET << "\n";
-        cout << "  " << DIM << setw(6) << "PID" << "  " << setw(15) << left << "İSİM" 
+        cout << BOLD_BLUE << "  EN COK BELLEK KULLANAN ISLEMLER" << RESET << "\n";
+        cout << "  " << DIM << setw(6) << "PID" << "  " << setw(15) << left << "ISIM" 
              << setw(10) << right << "BELLEK" << RESET << "\n";
         
         for (const auto& proc : processes) {
@@ -687,8 +659,8 @@ private:
     
     void drawFooter() {
         auto [cols, rows] = TerminalUtils::getTerminalSize();
-        cout << string(cols, '─') << "\n";
-        cout << DIM << "  CTRL+C: Çıkış  |  Yenileme: 0.5s" << RESET << "\n";
+        cout << string(cols, '-') << "\n";
+        cout << DIM << "  CTRL+C: Cikis  |  Yenileme: 0.5s" << RESET << "\n";
     }
     
 public:
@@ -726,7 +698,7 @@ int main() {
     
     TerminalUtils::showCursor();
     TerminalUtils::clearScreen();
-    cout << GREEN << "Sistem monitörü kapatıldı." << RESET << endl;
+    cout << GREEN << "Sistem monitoru kapatildi." << RESET << endl;
     
     return 0;
 }

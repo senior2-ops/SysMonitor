@@ -16,10 +16,11 @@
 #include <deque>
 #include <numeric>
 #include <cstring>
+#include <dirent.h>
 
 using namespace std;
 
-// --- GELİŞMİŞ RENK MAKROLARI ---
+// --- RENK MAKROLARI ---
 #define RESET       "\033[0m"
 #define RED         "\033[31m"
 #define GREEN       "\033[32m"
@@ -38,26 +39,9 @@ using namespace std;
 #define BOLD_MAGENTA "\033[1;35m"
 #define BOLD_WHITE  "\033[1;37m"
 #define BG_BLUE     "\033[44m"
-#define BG_RED      "\033[41m"
-#define BG_GREEN    "\033[42m"
-
-// ASCII karakter sabitleri (Unicode yerine)
-const string BAR_FULL = "#";
-const string BAR_EMPTY = ".";
-const string BAR_HALF = ":";
-const string BOX_TL = "+";
-const string BOX_TR = "+";
-const string BOX_BL = "+";
-const string BOX_BR = "+";
-const string BOX_H = "-";
-const string BOX_V = "|";
-const string BOX_H_DOUBLE = "=";
-const string ARROW_UP = "^";
-const string ARROW_DOWN = "v";
-const string LIGHTNING = "!";
-const string BATTERY = "B";
 
 volatile sig_atomic_t g_running = 1;
+
 void signalHandler(int signum) { 
     g_running = 0; 
 }
@@ -82,7 +66,7 @@ public:
             cols = w.ws_col;
             rows = w.ws_row;
         } else {
-            cols = 80;  // Varsayılan
+            cols = 80;
             rows = 24;
         }
     }
@@ -99,13 +83,13 @@ public:
         
         for (int i = 0; i < width; ++i) {
             if (i < pos) {
-                if (percentage >= 85) bar += RED + BAR_FULL + RESET;
-                else if (percentage >= 60) bar += YELLOW + BAR_FULL + RESET;
-                else bar += GREEN + BAR_FULL + RESET;
+                if (percentage >= 85) bar += RED "#" RESET;
+                else if (percentage >= 60) bar += YELLOW "#" RESET;
+                else bar += GREEN "#" RESET;
             } else if (i == pos) {
-                bar += BOLD + BAR_HALF + RESET;
+                bar += BOLD ":" RESET;
             } else {
-                bar += DIM + BAR_EMPTY + RESET;
+                bar += DIM "." RESET;
             }
         }
         
@@ -147,54 +131,13 @@ public:
         
         double recent = 0.0;
         size_t count = 0;
-        for (size_t i = history.size() - 1; i >= history.size() - 5 && i < history.size(); --i) {
+        size_t startIdx = history.size() >= 5 ? history.size() - 5 : 0;
+        for (size_t i = startIdx; i < history.size(); ++i) {
             recent += history[i];
             count++;
         }
         
-        return (recent / count) - getAverage();
-    }
-    
-    string getGraph(int width = 40, int height = 5) const {
-        if (history.size() < 2) return "";
-        
-        double maxVal = history[0];
-        double minVal = history[0];
-        
-        for (size_t i = 0; i < history.size(); ++i) {
-            if (history[i] > maxVal) maxVal = history[i];
-            if (history[i] < minVal) minVal = history[i];
-        }
-        
-        if (maxVal == minVal) maxVal = minVal + 1.0;
-        
-        vector<string> lines(height, string(width, ' '));
-        
-        for (size_t i = 0; i < history.size() && i < (size_t)width; ++i) {
-            double val = history[history.size() - 1 - i];
-            int y = (int)((val - minVal) / (maxVal - minVal) * (height - 1));
-            y = height - 1 - y;
-            
-            for (int j = 0; j < height; ++j) {
-                if (j == y) {
-                    lines[j][width - 1 - i] = '#';
-                } else if (j > y) {
-                    lines[j][width - 1 - i] = ':';
-                }
-            }
-        }
-        
-        string graph;
-        for (int i = 0; i < height; ++i) {
-            graph += "  " + lines[i] + "\n";
-        }
-        
-        stringstream ss;
-        ss << "  Min: " << fixed << setprecision(1) << minVal 
-           << "%  Max: " << maxVal << "%";
-        graph += ss.str();
-        
-        return graph;
+        return (count > 0) ? (recent / count) - getAverage() : 0.0;
     }
 };
 
@@ -214,14 +157,14 @@ public:
         if (!file.is_open()) return 0.0;
         
         string label;
-        long long user, nice, system, idle, iowait, irq, softirq;
+        long long user, nice, system, idle, iowait, irq, softirq, steal;
         
-        if (!(file >> label >> user >> nice >> system >> idle >> iowait >> irq >> softirq)) {
+        if (!(file >> label >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal)) {
             return 0.0;
         }
         
         long long totalIdle = idle + iowait;
-        long long totalCpu = user + nice + system + idle + iowait + irq + softirq;
+        long long totalCpu = user + nice + system + idle + iowait + irq + softirq + steal;
         
         double diffTotal = (double)(totalCpu - prevTotal);
         double diffIdle = (double)(totalIdle - prevIdle);
@@ -244,10 +187,6 @@ public:
         return history.getTrend(); 
     }
     
-    string getHistoryGraph() const { 
-        return history.getGraph(); 
-    }
-    
     vector<double> getCoreUsage() {
         vector<double> coreUsage;
         ifstream file("/proc/stat");
@@ -262,9 +201,9 @@ public:
             
             istringstream iss(line);
             string label;
-            long long user, nice, system, idle, iowait, irq, softirq;
+            long long user, nice, system, idle, iowait, irq, softirq, steal;
             
-            if (!(iss >> label >> user >> nice >> system >> idle >> iowait >> irq >> softirq)) {
+            if (!(iss >> label >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal)) {
                 continue;
             }
             
@@ -274,7 +213,7 @@ public:
             }
             
             long long totalIdle = idle + iowait;
-            long long totalCpu = user + nice + system + idle + iowait + irq + softirq;
+            long long totalCpu = user + nice + system + idle + iowait + irq + softirq + steal;
             
             double diffTotal = (double)(totalCpu - prevCoreTotal[coreIndex]);
             double diffIdle = (double)(totalIdle - prevCoreIdle[coreIndex]);
@@ -297,8 +236,8 @@ public:
         
         // Thermal zone üzerinden okuma
         for (int i = 0; i < 20; ++i) {
-            string path = "/sys/class/thermal/thermal_zone" + to_string(i) + "/type";
-            ifstream typeFile(path);
+            string typePath = "/sys/class/thermal/thermal_zone" + to_string(i) + "/type";
+            ifstream typeFile(typePath);
             if (!typeFile.is_open()) continue;
             
             string type;
@@ -306,7 +245,8 @@ public:
             
             if (type.find("cpu") != string::npos || 
                 type.find("x86") != string::npos ||
-                type.find("acpitz") != string::npos) {
+                type.find("acpitz") != string::npos ||
+                type.find("soc") != string::npos) {
                 
                 string tempPath = "/sys/class/thermal/thermal_zone" + to_string(i) + "/temp";
                 ifstream tempFile(tempPath);
@@ -379,12 +319,13 @@ public:
         long memAvailable = mem["MemAvailable"] * 1024;
         long buffers = mem["Buffers"] * 1024;
         long cached = mem["Cached"] * 1024;
+        long sReclaimable = mem["SReclaimable"] * 1024;
         long swapTotal = mem["SwapTotal"] * 1024;
         long swapFree = mem["SwapFree"] * 1024;
         
         stats.usedRam = memTotal - memAvailable;
         stats.freeRam = memAvailable;
-        stats.cachedRam = cached + buffers;
+        stats.cachedRam = cached + buffers + sReclaimable;
         stats.ramPercent = (memTotal > 0) ? 
             (stats.usedRam * 100.0 / memTotal) : 0.0;
         
@@ -409,16 +350,21 @@ public:
         string status;
         string technology;
         double temperature;
+        double capacityRemaining;
+        double timeEstimate;
         bool isCharging;
         
         BatData() : current(0), capacity(0), voltage(0.0), power(0.0),
                    cycles(0), health("N/A"), status("Bilinmiyor"),
-                   technology("N/A"), temperature(0.0), isCharging(false) {}
+                   technology("N/A"), temperature(0.0), 
+                   capacityRemaining(0.0), timeEstimate(0.0),
+                   isCharging(false) {}
     };
 
 private:
     HistoryTracker capHistory;
     HistoryTracker powerHistory;
+    string batteryPath;
     
     long readLongFromFile(const string& path) const {
         ifstream file(path);
@@ -433,57 +379,141 @@ private:
         ifstream file(path);
         string value = "N/A";
         if (file.is_open()) {
-            file >> value;
+            getline(file, value);
         }
         return value;
     }
     
+    string findBatteryPath() {
+        // /sys/class/power_supply/ dizinini tara
+        DIR* dir = opendir("/sys/class/power_supply/");
+        if (dir) {
+            struct dirent* entry;
+            while ((entry = readdir(dir)) != NULL) {
+                string name = entry->d_name;
+                if (name == "." || name == "..") continue;
+                
+                string fullPath = "/sys/class/power_supply/" + name + "/";
+                string capFile = fullPath + "capacity";
+                
+                if (access(capFile.c_str(), F_OK) == 0) {
+                    ifstream testFile(capFile);
+                    int cap;
+                    if (testFile >> cap && cap >= 0 && cap <= 100) {
+                        closedir(dir);
+                        return fullPath;
+                    }
+                }
+            }
+            closedir(dir);
+        }
+        
+        return "";
+    }
+    
+    long findChargeFull(const string& path) const {
+        // Farklı isimlendirme standartlarını dene
+        vector<string> possibleNames = {
+            "charge_full", "charge_full_design", 
+            "energy_full", "energy_full_design"
+        };
+        
+        for (const auto& name : possibleNames) {
+            long value = readLongFromFile(path + name);
+            if (value > 0) return value;
+        }
+        
+        return 0;
+    }
+    
 public:
-    BatteryMonitor() : capHistory(60), powerHistory(60) {}
+    BatteryMonitor() : capHistory(60), powerHistory(60) {
+        batteryPath = findBatteryPath();
+    }
 
     BatData getStats() {
         BatData data;
         
-        // Batarya yolunu bul
-        string basePath = "/sys/class/power_supply/BAT0/";
-        if (access((basePath + "capacity").c_str(), F_OK) != 0) {
-            basePath = "/sys/class/power_supply/BAT1/";
-            if (access((basePath + "capacity").c_str(), F_OK) != 0) {
-                return data; // Batarya bulunamadı
-            }
+        if (batteryPath.empty()) {
+            batteryPath = findBatteryPath();
+            if (batteryPath.empty()) return data;
         }
         
-        // Temel değerleri oku
-        data.capacity = (int)readLongFromFile(basePath + "capacity");
-        long currentRaw = readLongFromFile(basePath + "current_now");
-        data.current = currentRaw / 1000; // mA cinsinden
-        long voltageRaw = readLongFromFile(basePath + "voltage_now");
-        data.voltage = voltageRaw / 1000000.0; // V cinsinden
+        // Kapasite (%)
+        data.capacity = (int)readLongFromFile(batteryPath + "capacity");
+        if (data.capacity < 0 || data.capacity > 100) {
+            data.capacity = 0;
+        }
         
-        data.status = readStringFromFile(basePath + "status");
-        data.health = readStringFromFile(basePath + "health");
-        data.cycles = (int)readLongFromFile(basePath + "cycle_count");
-        data.technology = readStringFromFile(basePath + "technology");
+        // Akım (mA)
+        long currentRaw = readLongFromFile(batteryPath + "current_now");
+        data.current = currentRaw / 1000;
+        
+        // Voltaj (V)
+        long voltageRaw = readLongFromFile(batteryPath + "voltage_now");
+        data.voltage = voltageRaw / 1000000.0;
+        if (data.voltage <= 0) {
+            data.voltage = voltageRaw / 1000.0;  // Bazı sistemlerde mV
+        }
+        
+        // Durum
+        data.status = readStringFromFile(batteryPath + "status");
+        
+        // Sağlık
+        data.health = readStringFromFile(batteryPath + "health");
+        if (data.health == "N/A" || data.health.empty()) {
+            data.health = "Good";
+        }
+        
+        // Döngü sayısı
+        data.cycles = (int)readLongFromFile(batteryPath + "cycle_count");
+        
+        // Teknoloji
+        data.technology = readStringFromFile(batteryPath + "technology");
+        if (data.technology == "N/A" || data.technology.empty()) {
+            data.technology = "Li-ion";
+        }
         
         // Sıcaklık
-        long tempRaw = readLongFromFile(basePath + "temp");
-        data.temperature = tempRaw / 10.0;
+        long tempRaw = readLongFromFile(batteryPath + "temp");
+        if (tempRaw > 0) {
+            if (tempRaw > 100) {
+                data.temperature = tempRaw / 10.0;
+            } else {
+                data.temperature = (double)tempRaw;
+            }
+        }
         
         // Güç hesaplama (Watt)
         data.power = abs(data.voltage * (data.current / 1000.0));
         
         // Şarj durumu
-        data.isCharging = (data.status == "Charging" || data.status == "Full");
+        data.isCharging = (data.status == "Charging" || 
+                          data.status == "Full" || 
+                          data.status == "charging" ||
+                          data.status == "full");
+        
+        // Kalan kapasite (Wh) ve tahmini süre
+        long chargeFull = findChargeFull(batteryPath);
+        if (chargeFull > 0 && data.voltage > 0) {
+            double fullCapacityWh = (chargeFull / 1000000.0) * data.voltage;
+            data.capacityRemaining = (data.capacity / 100.0) * fullCapacityWh;
+            
+            if (data.power > 0.1) {
+                if (!data.isCharging) {
+                    data.timeEstimate = (data.capacityRemaining / data.power) * 60.0;
+                } else {
+                    double remaining = fullCapacityWh - data.capacityRemaining;
+                    data.timeEstimate = (remaining / data.power) * 60.0;
+                }
+            }
+        }
         
         // Geçmiş kaydı
         capHistory.addValue((double)data.capacity);
         powerHistory.addValue(data.power);
         
         return data;
-    }
-    
-    string getCapacityGraph() const { 
-        return capHistory.getGraph(); 
     }
 };
 
@@ -503,8 +533,8 @@ public:
         if (sysinfo(&sysInfo) != 0) return processes;
         
         long totalRam = sysInfo.totalram * sysInfo.mem_unit;
+        if (totalRam <= 0) return processes;
         
-        // /proc taranıyor
         for (int pid = 1; pid < 32768 && processes.size() < 100; ++pid) {
             string procPath = "/proc/" + to_string(pid);
             if (access(procPath.c_str(), F_OK) != 0) continue;
@@ -512,13 +542,11 @@ public:
             ProcessInfo proc;
             proc.pid = pid;
             
-            // İşlem adını al
             ifstream cmdFile(procPath + "/comm");
             if (!cmdFile.is_open()) continue;
             getline(cmdFile, proc.name);
             if (proc.name.empty()) continue;
             
-            // Bellek kullanımını al
             ifstream statusFile(procPath + "/status");
             if (!statusFile.is_open()) continue;
             
@@ -529,7 +557,7 @@ public:
                     long value;
                     string unit;
                     if (iss >> value >> unit) {
-                        proc.memSize = value * 1024; // KB -> bytes
+                        proc.memSize = value * 1024;
                         proc.memPercent = (proc.memSize * 100.0) / totalRam;
                         break;
                     }
@@ -541,7 +569,6 @@ public:
             }
         }
         
-        // Bellek kullanımına göre sırala
         sort(processes.begin(), processes.end(),
              [](const ProcessInfo& a, const ProcessInfo& b) {
                  return a.memSize > b.memSize;
@@ -556,7 +583,6 @@ public:
 };
 
 int main() {
-    // Sinyal yakalayıcıları kur
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
     
@@ -571,7 +597,7 @@ int main() {
     int iteration = 0;
     int cols = 80, rows = 24;
     
-    // İlk CPU kalibrasyonu
+    // CPU kalibrasyonu
     cpu.getUsage();
     usleep(100000);
     
@@ -581,7 +607,6 @@ int main() {
         auto elapsed = chrono::duration_cast<chrono::seconds>(
             currentTime - startTime).count();
         
-        // Sistem bilgilerini topla
         double cpuPerc = cpu.getUsage();
         double cpuAvg = cpu.getAverageUsage();
         double temp = cpu.getTemp();
@@ -591,16 +616,14 @@ int main() {
         MemoryMonitor::MemStats memStats = mem.getStats();
         
         TerminalUtils::getTerminalSize(cols, rows);
-        
         TerminalUtils::clearScreen();
         
         // Başlık
-        cout << BG_BLUE << BOLD_WHITE << "  SYS-MONITOR PRO v4.1 | CALISMA: " 
+        cout << BG_BLUE << BOLD_WHITE << "  SYS-MONITOR PRO v4.2 | CALISMA: " 
              << elapsed / 3600 << "s " 
              << (elapsed % 3600) / 60 << "d " 
              << elapsed % 60 << "sn ";
         
-        // Sağa dayalı boşluk
         int headerLen = 45;
         int remainingSpace = cols - headerLen;
         if (remainingSpace > 0) {
@@ -608,183 +631,185 @@ int main() {
         }
         cout << RESET << endl;
         
-        cout << string(cols, BOX_H[0]) << endl;
+        cout << string(cols, '-') << endl;
         
         // CPU Bölümü
-        cout << BOLD_CYAN << BOX_TL << string(2, BOX_H_DOUBLE[0]) 
-             << " SISTEM PERFORMANSI " << string(2, BOX_H_DOUBLE[0]) << BOX_TR 
-             << RESET << endl;
-        
-        cout << BOLD_CYAN << BOX_V << RESET 
+        cout << BOLD_CYAN << "+== SISTEM PERFORMANSI ==+" << RESET << endl;
+        cout << BOLD_CYAN << "|" << RESET 
              << " CPU Yuku:  " << ProgressBar::generate(cpuPerc) << "   "
-             << BOLD_CYAN << BOX_V << RESET << endl;
+             << BOLD_CYAN << "|" << RESET << endl;
         
-        cout << BOLD_CYAN << BOX_V << RESET 
+        cout << BOLD_CYAN << "|" << RESET 
              << " Ortalama:  " << ProgressBar::generate(cpuAvg) << "   "
-             << BOLD_CYAN << BOX_V << RESET << endl;
+             << BOLD_CYAN << "|" << RESET << endl;
         
-        cout << BOLD_CYAN << BOX_V << RESET 
+        cout << BOLD_CYAN << "|" << RESET 
              << " Sicaklik:  ";
         if (temp > 60) cout << BOLD_RED;
         else if (temp > 45) cout << YELLOW;
         else cout << GREEN;
         cout << fixed << setprecision(1) << temp << " C" << RESET;
-        cout << string(15, ' ') << BOLD_CYAN << BOX_V << RESET << endl;
+        cout << string(15, ' ') << BOLD_CYAN << "|" << RESET << endl;
         
-        // CPU Trend
         double trend = cpu.getTrend();
         if (abs(trend) > 0.5) {
-            cout << BOLD_CYAN << BOX_V << RESET 
+            cout << BOLD_CYAN << "|" << RESET 
                  << " Trend:     ";
             if (trend > 0) {
-                cout << RED << ARROW_UP << " ARTAN " << abs(trend) << "%" << RESET;
+                cout << RED << "^ ARTAN " << abs(trend) << "%" << RESET;
             } else {
-                cout << GREEN << ARROW_DOWN << " AZALAN " << abs(trend) << "%" << RESET;
+                cout << GREEN << "v AZALAN " << abs(trend) << "%" << RESET;
             }
-            cout << string(8, ' ') << BOLD_CYAN << BOX_V << RESET << endl;
+            cout << string(8, ' ') << BOLD_CYAN << "|" << RESET << endl;
         }
         
-        // CPU Çekirdekleri
         if (!cores.empty() && cols > 60) {
-            cout << BOLD_CYAN << BOX_V << RESET << " Cekirdekler: ";
+            cout << BOLD_CYAN << "|" << RESET << " Cekirdekler: ";
             for (size_t i = 0; i < cores.size() && i < 8; ++i) {
                 cout << "CPU" << i << ":" << fixed << setprecision(0) 
                      << setw(3) << cores[i] << "%";
                 if (i < cores.size() - 1) cout << " ";
             }
-            int usedSpace = 15 + cores.size() * 10;
+            int usedSpace = 15 + min(cores.size(), (size_t)8) * 10;
             if (cols > usedSpace + 2) {
                 cout << string(cols - usedSpace - 2, ' ');
             }
-            cout << BOLD_CYAN << BOX_V << RESET << endl;
+            cout << BOLD_CYAN << "|" << RESET << endl;
         }
         
-        cout << BOLD_CYAN << BOX_BL << string(cols - 2, BOX_H_DOUBLE[0]) 
-             << BOX_BR << RESET << endl;
+        cout << BOLD_CYAN << "+" << string(cols - 2, '=') << "+" << RESET << endl;
         
         // Bellek Bölümü
-        cout << BOLD_YELLOW << "\n" << BOX_TL << string(2, BOX_H_DOUBLE[0]) 
-             << " BELLEK DURUMU " << string(2, BOX_H_DOUBLE[0]) << BOX_TR 
-             << RESET << endl;
+        cout << BOLD_YELLOW << "\n+== BELLEK DURUMU ==+" << RESET << endl;
         
-        cout << BOLD_YELLOW << BOX_V << RESET 
+        cout << BOLD_YELLOW << "|" << RESET 
              << " RAM:       " << ProgressBar::generate(memStats.ramPercent) << "   "
-             << BOLD_YELLOW << BOX_V << RESET << endl;
+             << BOLD_YELLOW << "|" << RESET << endl;
         
-        cout << BOLD_YELLOW << BOX_V << RESET 
+        cout << BOLD_YELLOW << "|" << RESET 
              << " Kullanilan: " << fixed << setprecision(1) 
              << memStats.usedRam / (1024.0*1024.0) << " MiB / " 
              << (memStats.usedRam + memStats.freeRam) / (1024.0*1024.0) << " MiB"
              << string(cols > 60 ? cols - 60 : 3, ' ')
-             << BOLD_YELLOW << BOX_V << RESET << endl;
+             << BOLD_YELLOW << "|" << RESET << endl;
         
-        cout << BOLD_YELLOW << BOX_V << RESET 
+        cout << BOLD_YELLOW << "|" << RESET 
              << " Onbellek:  " << memStats.cachedRam / (1024.0*1024.0) << " MiB"
              << string(cols > 40 ? cols - 40 : 5, ' ')
-             << BOLD_YELLOW << BOX_V << RESET << endl;
+             << BOLD_YELLOW << "|" << RESET << endl;
         
         if (memStats.swapPercent > 0) {
-            cout << BOLD_YELLOW << BOX_V << RESET 
+            cout << BOLD_YELLOW << "|" << RESET 
                  << " Swap:      " << ProgressBar::generate(memStats.swapPercent) << "   "
-                 << BOLD_YELLOW << BOX_V << RESET << endl;
+                 << BOLD_YELLOW << "|" << RESET << endl;
         }
         
-        cout << BOLD_YELLOW << BOX_BL << string(cols - 2, BOX_H_DOUBLE[0]) 
-             << BOX_BR << RESET << endl;
+        cout << BOLD_YELLOW << "+" << string(cols - 2, '=') << "+" << RESET << endl;
         
         // Güç Bölümü
-        cout << BOLD_GREEN << "\n" << BOX_TL << string(2, BOX_H_DOUBLE[0]) 
-             << " GUC ANALIZI " << string(2, BOX_H_DOUBLE[0]) << BOX_TR 
-             << RESET << endl;
+        cout << BOLD_GREEN << "\n+== GUC ANALIZI ==+" << RESET << endl;
         
-        cout << BOLD_GREEN << BOX_V << RESET 
-             << " Kapasite:  " << ProgressBar::generate(batData.capacity) << "   "
-             << BOLD_GREEN << BOX_V << RESET << endl;
+        if (batData.capacity > 0) {
+            cout << BOLD_GREEN << "|" << RESET 
+                 << " Kapasite:  " << ProgressBar::generate(batData.capacity) << "   "
+                 << BOLD_GREEN << "|" << RESET << endl;
+        } else {
+            cout << BOLD_GREEN << "|" << RESET 
+                 << " Kapasite:  Pil bulunamadi veya veri alinamiyor"
+                 << string(cols > 55 ? cols - 55 : 3, ' ')
+                 << BOLD_GREEN << "|" << RESET << endl;
+        }
         
-        cout << BOLD_GREEN << BOX_V << RESET 
+        cout << BOLD_GREEN << "|" << RESET 
              << " Akim:      ";
         if (batData.current >= 0) cout << GREEN << "+";
         else cout << RED;
         cout << batData.current << " mA" << RESET 
              << " | Guc: " << BOLD << fixed << setprecision(2) 
              << batData.power << " W" << RESET << "   "
-             << BOLD_GREEN << BOX_V << RESET << endl;
+             << BOLD_GREEN << "|" << RESET << endl;
         
-        cout << BOLD_GREEN << BOX_V << RESET 
+        cout << BOLD_GREEN << "|" << RESET 
              << " Voltaj:    " << CYAN << fixed << setprecision(3) 
              << batData.voltage << " V" << RESET;
         if (batData.temperature > 0) {
             cout << " | Sicaklik: " << (int)batData.temperature << "C";
         }
         cout << string(cols > 50 ? cols - 50 : 5, ' ')
-             << BOLD_GREEN << BOX_V << RESET << endl;
+             << BOLD_GREEN << "|" << RESET << endl;
         
-        cout << BOLD_GREEN << BOX_BL << string(cols - 2, BOX_H_DOUBLE[0]) 
-             << BOX_BR << RESET << endl;
+        if (batData.capacityRemaining > 0) {
+            cout << BOLD_GREEN << "|" << RESET 
+                 << " Kalan:     " << fixed << setprecision(2) 
+                 << batData.capacityRemaining << " Wh";
+            if (batData.timeEstimate > 0) {
+                int hours = (int)(batData.timeEstimate / 60);
+                int mins = (int)(batData.timeEstimate) % 60;
+                cout << " | Tahmini: " << hours << "s " << mins << "d";
+            }
+            cout << string(cols > 60 ? cols - 60 : 3, ' ')
+                 << BOLD_GREEN << "|" << RESET << endl;
+        }
+        
+        cout << BOLD_GREEN << "+" << string(cols - 2, '=') << "+" << RESET << endl;
         
         // Pil Sağlığı Bölümü
-        cout << BOLD_MAGENTA << "\n" << BOX_TL << string(2, BOX_H_DOUBLE[0]) 
-             << " PIL SAGLIGI " << string(2, BOX_H_DOUBLE[0]) << BOX_TR 
-             << RESET << endl;
+        cout << BOLD_MAGENTA << "\n+== PIL SAGLIGI ==+" << RESET << endl;
         
-        cout << BOLD_MAGENTA << BOX_V << RESET 
+        cout << BOLD_MAGENTA << "|" << RESET 
              << " Saglik:    ";
         if (batData.health == "Good") cout << GREEN;
         else cout << YELLOW;
         cout << batData.health << RESET;
         cout << string(cols > 30 ? cols - 30 : 3, ' ')
-             << BOLD_MAGENTA << BOX_V << RESET << endl;
+             << BOLD_MAGENTA << "|" << RESET << endl;
         
-        cout << BOLD_MAGENTA << BOX_V << RESET 
+        cout << BOLD_MAGENTA << "|" << RESET 
              << " Dongu:     " << WHITE << batData.cycles << " tam dongu" << RESET
              << string(cols > 30 ? cols - 30 : 3, ' ')
-             << BOLD_MAGENTA << BOX_V << RESET << endl;
+             << BOLD_MAGENTA << "|" << RESET << endl;
         
-        cout << BOLD_MAGENTA << BOX_V << RESET 
+        cout << BOLD_MAGENTA << "|" << RESET 
              << " Teknoloji: " << WHITE << batData.technology << RESET
              << string(cols > 30 ? cols - 30 : 3, ' ')
-             << BOLD_MAGENTA << BOX_V << RESET << endl;
+             << BOLD_MAGENTA << "|" << RESET << endl;
         
-        cout << BOLD_MAGENTA << BOX_V << RESET 
+        cout << BOLD_MAGENTA << "|" << RESET 
              << " Durum:     ";
         if (batData.isCharging) {
             double eff = 100.0 - (cpuPerc * 0.4) - (temp > 38 ? (temp - 38) * 2 : 0);
             if (eff < 0) eff = 0;
-            cout << GREEN << LIGHTNING << " SARJ OLUYOR" << RESET 
+            cout << GREEN << "! SARJ OLUYOR" << RESET 
                  << " | Verim: %" << (int)eff;
         } else {
-            cout << RED << BATTERY << " DESARJ" << RESET;
+            cout << RED << "B DESARJ" << RESET;
         }
         cout << string(cols > 50 ? cols - 50 : 3, ' ')
-             << BOLD_MAGENTA << BOX_V << RESET << endl;
+             << BOLD_MAGENTA << "|" << RESET << endl;
         
-        cout << BOLD_MAGENTA << BOX_BL << string(cols - 2, BOX_H_DOUBLE[0]) 
-             << BOX_BR << RESET << endl;
+        cout << BOLD_MAGENTA << "+" << string(cols - 2, '=') << "+" << RESET << endl;
         
         // En çok bellek kullanan işlemler
         if (cols > 60 && iteration % 3 == 0) {
-            cout << BOLD_CYAN << "\n" << BOX_TL << string(2, BOX_H_DOUBLE[0]) 
-                 << " EN COK BELLEK KULLANAN ISLEMLER " 
-                 << string(2, BOX_H_DOUBLE[0]) << BOX_TR << RESET << endl;
+            cout << BOLD_CYAN << "\n+== EN COK BELLEK KULLANAN ISLEMLER ==+" << RESET << endl;
             
             vector<ProcessMonitor::ProcessInfo> processes = proc.getTopProcesses(3);
             for (size_t i = 0; i < processes.size(); ++i) {
-                cout << BOLD_CYAN << BOX_V << RESET 
+                cout << BOLD_CYAN << "|" << RESET 
                      << " " << (i + 1) << ". " 
                      << setw(15) << left << processes[i].name.substr(0, 15) 
                      << " PID:" << setw(6) << processes[i].pid 
                      << " Bellek:" << fixed << setprecision(1) << setw(7) 
                      << processes[i].memSize / 1024.0 << " MiB"
                      << string(cols > 60 ? cols - 60 : 2, ' ')
-                     << BOLD_CYAN << BOX_V << RESET << endl;
+                     << BOLD_CYAN << "|" << RESET << endl;
             }
             
-            cout << BOLD_CYAN << BOX_BL << string(cols - 2, BOX_H_DOUBLE[0]) 
-                 << BOX_BR << RESET << endl;
+            cout << BOLD_CYAN << "+" << string(cols - 2, '=') << "+" << RESET << endl;
         }
         
         // Alt bilgi
-        cout << endl << string(cols, BOX_H[0]) << endl;
+        cout << endl << string(cols, '-') << endl;
         cout << DIM << " Cikis: CTRL+C | Yenileme: " << iteration 
              << " | Son guncelleme: " << elapsed << "sn" << RESET;
         cout << string(cols > 50 ? cols - 50 : 2, ' ') << endl;
@@ -792,7 +817,6 @@ int main() {
         usleep(850000);
     }
     
-    // Temizlik
     TerminalUtils::showCursor();
     TerminalUtils::clearScreen();
     cout << GREEN << "Sistem monitoru kapatildi. Iyi gunler!" << RESET << endl;
